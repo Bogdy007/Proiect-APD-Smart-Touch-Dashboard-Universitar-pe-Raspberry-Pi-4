@@ -18,7 +18,7 @@ Arhitectura, contractele de date, API-ul backend și code review pe PR-urile ech
 - [ ] Code review pe fiecare PR al echipei — ținta e minimum 15 review-uri până la final (livrabil individual)
 - [ ] Integrarea modulelor reale în `default_services()` pe măsură ce sunt livrate
 - [ ] Rutele private (preview email, setări) protejate de modulul de autentificare real
-- [ ] Verifică că niciun apel de rețea nu blochează (totul `async`)
+- [x] Verifică că niciun apel de rețea nu blochează (totul `async`) — PR #29
 
 ## Sprint 3
 
