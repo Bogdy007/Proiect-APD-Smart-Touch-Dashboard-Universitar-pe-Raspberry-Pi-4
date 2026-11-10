@@ -6,6 +6,11 @@ Documentație interactivă: http://127.0.0.1:8000/docs
 
 app.py nu conține logică de achiziție sau cache: doar rutează cererile către
 serviciile din interfaces.py. Implementările reale se injectează în create_app().
+
+Regulă de ne-blocare: serviciile sincrone (MetricsProvider, AuthService) pot
+face operații lente (psutil, hash scrypt), așa că se apelează DOAR prin
+run_in_threadpool. Serviciile async (CacheService, ConfigStore) se apelează
+direct cu await și nu au voie să facă I/O blocant.
 """
 
 from __future__ import annotations
@@ -19,6 +24,7 @@ from datetime import datetime, timezone
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -176,7 +182,7 @@ async def _metrics_loop(app: FastAPI) -> None:
     last_online: bool | None = None
     while True:
         try:
-            metrics = services.metrics.read()
+            metrics = await run_in_threadpool(services.metrics.read)
             await app.state.ws.broadcast(WsEventType.METRICS, metrics.model_dump(mode="json"))
             if last_online is not None and metrics.online != last_online:
                 await app.state.ws.broadcast(WsEventType.CONNECTIVITY, {"online": metrics.online})
@@ -195,7 +201,7 @@ def _register_routes(app: FastAPI) -> None:
     # --- Health -----------------------------------------------------------
     @app.get("/api/health", response_model=HealthStatus, tags=["system"])
     async def health(s: ServicesDep):
-        online = s.metrics.read().online
+        online = (await run_in_threadpool(s.metrics.read)).online
         return HealthStatus(status="ok" if online else "degraded", online=online, mail_mode=s.mail_mode)
 
     # --- Email ------------------------------------------------------------
@@ -281,11 +287,12 @@ def _register_routes(app: FastAPI) -> None:
     # --- Monitorizare -----------------------------------------------------
     @app.get("/api/system/metrics", response_model=SystemMetrics, tags=["system"])
     async def system_metrics(s: ServicesDep):
-        return s.metrics.read()
+        return await run_in_threadpool(s.metrics.read)
 
     @app.get("/api/system/telemetry", response_model=TelemetrySnapshot, tags=["system"])
     async def telemetry(s: ServicesDep):
-        return TelemetrySnapshot(system=s.metrics.read(), sources=await s.cache.get_telemetry())
+        system = await run_in_threadpool(s.metrics.read)
+        return TelemetrySnapshot(system=system, sources=await s.cache.get_telemetry())
 
     # --- Autentificare ----------------------------------------------------
     @app.post("/api/auth/unlock", response_model=SessionInfo, responses={401: {"model": ErrorResponse},
@@ -293,18 +300,18 @@ def _register_routes(app: FastAPI) -> None:
               tags=["auth"])
     async def unlock(body: UnlockRequest, s: ServicesDep):
         try:
-            return s.auth.unlock(body.pin)
+            return await run_in_threadpool(s.auth.unlock, body.pin)
         except AuthError as e:
             raise HTTPException(429 if e.code == "LOCKED_OUT" else 401, {"code": e.code, "message": str(e)})
 
     @app.post("/api/auth/lock", status_code=204, tags=["auth"])
     async def lock(s: ServicesDep, token: Annotated[str | None, Depends(get_token)]):
-        s.auth.lock(token)
+        await run_in_threadpool(s.auth.lock, token)
         await app.state.ws.broadcast(WsEventType.AUTH_LOCKED)
 
     @app.get("/api/auth/status", response_model=AuthStatus, tags=["auth"])
     async def auth_status(s: ServicesDep, token: Annotated[str | None, Depends(get_token)]):
-        return s.auth.status(token)
+        return await run_in_threadpool(s.auth.status, token)
 
     # --- WebSocket --------------------------------------------------------
     @app.websocket("/ws")
