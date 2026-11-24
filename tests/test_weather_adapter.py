@@ -14,6 +14,7 @@ from src.adapters.weather_adapter import (
     HOURLY_COUNT,
     DAILY_COUNT,
     OpenMeteoWeatherAdapter,
+    _to_float,
     map_weather_code,
 )
 from src.backend.interfaces import SourceError
@@ -113,9 +114,13 @@ def test_daily_forecast_next_5_days():
     data = _fetch(_adapter(_json_handler(_payload())))
     assert len(data.daily) == DAILY_COUNT
     first = data.daily[0]
-    assert first.temperature_min_c == 0.0
-    assert first.temperature_max_c == 10.0
-    assert first.temperature_c == 10.0  # max, conform schemei
+    # prima zi returnată este MAINE (ziua curentă e exclusă din prognoză)
+    today = NOW.date()
+    assert first.time.date() == today + timedelta(days=1)
+    assert all(p.time.date() > today for p in data.daily)
+    assert first.temperature_min_c == 1.0
+    assert first.temperature_max_c == 11.0
+    assert first.temperature_c == 11.0  # max, conform schemei
     assert first.condition == WeatherCondition.RAIN
     assert first.precipitation_pct == 30
 
@@ -232,3 +237,87 @@ def test_network_error_raises_source_error():
 
     with pytest.raises(SourceError):
         _fetch(_adapter(handler))
+
+
+# ---------------------------------------------------------------------------
+# Valori invalide de la API -> SourceError (review: contractul providerului)
+# ---------------------------------------------------------------------------
+
+def _payload_with_current(**fields):
+    payload = _payload()
+    payload["current"].update(fields)
+    return payload
+
+
+def _raw_json_handler(payload):
+    """httpx.Response(json=...) respinge NaN/Infinity; serializăm manual
+    (json.loads din adaptor acceptă literalii non-standard NaN/Infinity)."""
+    body = json.dumps(payload).encode()
+
+    def handler(request):
+        return httpx.Response(200, content=body)
+
+    return handler
+
+
+def test_negative_wind_raises_source_error_not_validation_error():
+    with pytest.raises(SourceError) as exc:
+        _fetch(_adapter(_json_handler(_payload_with_current(wind_speed_10m=-5.0))))
+    assert "invalide" in str(exc.value)
+
+
+def test_nan_wind_raises_source_error():
+    with pytest.raises(SourceError):
+        _fetch(_adapter(_raw_json_handler(_payload_with_current(wind_speed_10m=float("nan")))))
+
+
+def test_nan_humidity_raises_source_error():
+    with pytest.raises(SourceError):
+        _fetch(_adapter(_raw_json_handler(_payload_with_current(relative_humidity_2m=float("nan")))))
+
+
+def test_infinite_values_raise_source_error():
+    for field in ("wind_speed_10m", "temperature_2m", "apparent_temperature"):
+        for bad in (float("inf"), float("-inf")):
+            with pytest.raises(SourceError):
+                _fetch(_adapter(_raw_json_handler(_payload_with_current(**{field: bad}))))
+
+
+def test_invalid_numeric_values_raise_source_error():
+    # string neverificabil ca număr la câmp esențial -> SourceError, nu altceva
+    with pytest.raises(SourceError):
+        _fetch(_adapter(_json_handler(_payload_with_current(wind_speed_10m=" tare"))))
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        (1.5, 1.5),
+        (0, 0.0),
+        (-3.2, -3.2),
+        (float("nan"), None),
+        (float("inf"), None),
+        (float("-inf"), None),
+        (True, None),
+        ("12.5", None),
+        (None, None),
+        ("abc", None),
+    ],
+)
+def test_to_float_conversion(value, expected):
+    assert _to_float(value) == expected
+
+
+@pytest.mark.parametrize("code", [float("inf"), float("-inf"), 10**30, -10**30])
+def test_extreme_weather_code_maps_to_unknown(code):
+    # int(inf) ridică OverflowError; codurile extreme nu trebuie să crape
+    assert map_weather_code(code) == WeatherCondition.UNKNOWN
+
+
+def test_daily_excludes_today_returns_next_5_days():
+    # seria zilnică din payload are 7 zile începând de azi
+    data = _fetch(_adapter(_json_handler(_payload())))
+    days = [p.time.date() for p in data.daily]
+    assert len(days) == DAILY_COUNT == 5
+    assert NOW.date() not in days
+    assert days == sorted(days)

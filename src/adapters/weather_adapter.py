@@ -18,10 +18,12 @@ Adaptorul nu face retry și nu cunoaște cache-ul.
 from __future__ import annotations
 
 import logging
+import math
 from datetime import datetime, timezone
 from typing import Any
 
 import httpx
+from pydantic import ValidationError
 
 from src.backend.interfaces import SourceError
 from src.backend.schemas import (
@@ -93,7 +95,7 @@ def map_weather_code(code: int | float | str | None) -> WeatherCondition:
     """Convertește un cod WMO în WeatherCondition. Codurile necunoscute -> UNKNOWN."""
     try:
         return _WMO_TO_CONDITION.get(int(code), WeatherCondition.UNKNOWN)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return WeatherCondition.UNKNOWN
 
 
@@ -121,7 +123,9 @@ def _to_float(value: Any) -> float | None:
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
-        return float(value)
+        number = float(value)
+        # NaN / ±Infinity nu sunt valori meteo valide
+        return number if math.isfinite(number) else None
     return None
 
 
@@ -200,7 +204,12 @@ class OpenMeteoWeatherAdapter:
         if not isinstance(payload, dict):
             raise SourceError(SOURCE_NAME, "răspuns Open-Meteo are format neașteptat")
 
-        return self._build_weather_data(payload, latitude, longitude, location_name)
+        try:
+            return self._build_weather_data(payload, latitude, longitude, location_name)
+        except ValidationError as e:
+            # Date primite de la API, dar invalide pentru schemă (ex. vânt negativ,
+            # umiditate NaN) — le raportăm ca SourceError, nu ca ValidationError.
+            raise SourceError(SOURCE_NAME, "date meteo invalide") from e
 
     # ------------------------------------------------------------------
     # Normalizare
@@ -313,7 +322,9 @@ class OpenMeteoWeatherAdapter:
         return (upcoming or points)[:HOURLY_COUNT]
 
     def _build_daily(self, block: Any) -> list[WeatherForecastPoint]:
-        return self._series(block, "daily")[:DAILY_COUNT]
+        # Seria zilnică include ziua curentă pe poziția 0; prognoza cere
+        # următoarele DAILY_COUNT zile, deci sărem prima intrare.
+        return self._series(block, "daily")[1 : DAILY_COUNT + 1]
 
 
 def _retry_after_s(response: httpx.Response) -> float | None:
