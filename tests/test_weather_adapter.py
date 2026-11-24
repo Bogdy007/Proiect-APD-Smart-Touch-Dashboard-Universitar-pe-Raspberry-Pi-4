@@ -302,6 +302,8 @@ def test_invalid_numeric_values_raise_source_error():
         ("12.5", None),
         (None, None),
         ("abc", None),
+        (10**400, None),   # int prea mare pentru float -> OverflowError prins
+        (-(10**400), None),
     ],
 )
 def test_to_float_conversion(value, expected):

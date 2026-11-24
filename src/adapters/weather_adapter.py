@@ -123,7 +123,11 @@ def _to_float(value: Any) -> float | None:
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
-        number = float(value)
+        try:
+            number = float(value)
+        except OverflowError:
+            # int extrem de mare nu poate fi convertit la float
+            return None
         # NaN / ±Infinity nu sunt valori meteo valide
         return number if math.isfinite(number) else None
     return None
