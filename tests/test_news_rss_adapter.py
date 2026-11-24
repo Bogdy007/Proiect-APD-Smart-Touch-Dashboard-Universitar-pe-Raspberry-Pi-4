@@ -125,7 +125,10 @@ def test_disabled_source_is_skipped():
         ("<script>alert(1)</script>Sigur", "Sigur"),
         ("<style>body{color:red}</style>Conținut", "Conținut"),
         ("<p>a</p><script>bad()</script><p>b</p>", "a b"),
-        ("&lt;script&gt;alert(1)&lt;/script&gt;", "<script>alert(1)</script>"),  # entități -> text, nu executabil
+        # entitățile se decodifică ÎNAINTE de curățare -> devine <script> real -> eliminat complet
+        ("&lt;script&gt;alert(1)&lt;/script&gt;", ""),
+        ("&lt;style&gt;x{}&lt;/style&gt;Text", "Text"),
+        ("&lt;b&gt;bold&lt;/b&gt;", "bold"),
         ("   spații   multiple\n\n", "spații multiple"),
         (None, ""),
         ("", ""),
@@ -297,3 +300,92 @@ def test_verified_feeds_are_well_formed():
     assert len(VERIFIED_FEEDS) >= 3
     for sid, name, url in VERIFIED_FEEDS:
         assert sid and name and url.startswith("https://")
+
+
+# ---------------------------------------------------------------------------
+# Review fixes: BytesIO pentru feedparser, entități înainte de curățare,
+# redirect-uri HTTP
+# ---------------------------------------------------------------------------
+
+def test_feedparser_receives_bytesio_not_raw_content(monkeypatch):
+    """feedparser.parse nu trebuie să primească bytes sau un path — doar un flux de memorie."""
+    import io as _io
+    import feedparser as _fp
+
+    captured = []
+    real_parse = _fp.parse
+
+    def spy(arg, *a, **kw):
+        captured.append(arg)
+        return real_parse(arg, *a, **kw)
+
+    monkeypatch.setattr(_fp, "parse", spy)
+
+    adapter = _adapter({"https://example.com/feed.xml": httpx.Response(200, content=GOOD_RSS)})
+    items = _fetch(adapter, [_source()])
+    assert items
+    assert len(captured) == 1
+    assert isinstance(captured[0], _io.BytesIO), f"feedparser a primit {type(captured[0])}"
+
+
+def test_rss_and_atom_both_parsed_via_bytesio(monkeypatch):
+    import io as _io
+    import feedparser as _fp
+
+    types = []
+    real_parse = _fp.parse
+
+    def spy(arg, *a, **kw):
+        types.append(type(arg))
+        return real_parse(arg, *a, **kw)
+
+    monkeypatch.setattr(_fp, "parse", spy)
+
+    atom = _atom(_atom_entry("A", "https://a.example.com/1"))
+    adapter = _adapter({
+        "https://rss.example.com/feed": httpx.Response(200, content=GOOD_RSS),
+        "https://atom.example.com/feed": httpx.Response(200, content=atom),
+    })
+    sources = [_source("r", "RSS", "https://rss.example.com/feed"),
+               _source("a", "Atom", "https://atom.example.com/feed")]
+    items = _fetch(adapter, sources)
+    assert len(items) == 3
+    assert types == [_io.BytesIO, _io.BytesIO]
+
+
+def test_encoded_script_in_feed_summary_is_fully_removed():
+    """&lt;script&gt; din descriere devine tag real după unescape -> eliminat, nu returnat."""
+    desc = "&lt;script&gt;alert(document.cookie)&lt;/script&gt;Informație utilă"
+    body = _rss(_item("Titlu", "https://example.com/enc", desc=desc))
+    adapter = _adapter({"https://example.com/feed.xml": httpx.Response(200, content=body)})
+    item = _fetch(adapter, [_source()])[0]
+    assert "script" not in item.summary.lower()
+    assert "alert" not in item.summary
+    assert "Informație utilă" in item.summary
+    assert "<" not in item.summary and ">" not in item.summary
+
+
+def test_encoded_style_in_feed_summary_is_fully_removed():
+    desc = "&lt;style&gt;body{display:none}&lt;/style&gt;Conținut rămas"
+    body = _rss(_item("Titlu", "https://example.com/encstyle", desc=desc))
+    adapter = _adapter({"https://example.com/feed.xml": httpx.Response(200, content=body)})
+    item = _fetch(adapter, [_source()])[0]
+    assert item.summary == "Conținut rămas"
+
+
+@pytest.mark.parametrize("code", [301, 302])
+def test_redirect_is_followed(code):
+    """Feed-urile care redirecționează (301/302) trebuie să funcționeze."""
+    feed = GOOD_RSS
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/old-feed":
+            return httpx.Response(code, headers={"Location": "/new-feed"})
+        return httpx.Response(200, content=feed)
+
+    transport = httpx.MockTransport(handler)
+    adapter = RssNewsAdapter(client=httpx.AsyncClient(transport=transport))
+    src = _source(url="https://example.com/old-feed")
+    items = _fetch(adapter, [src])
+    assert len(items) == 2
+    assert items[0].title == "Știre una"

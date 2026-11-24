@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import html
+import io
 import logging
 import re
 from datetime import datetime, timezone
@@ -65,12 +66,15 @@ def clean_html(raw: str | None) -> str:
 
     Elimină script/style, toate tagurile, decodifică entitățile HTML și
     normalizează spațiile. Rezultatul nu poate conține markup executabil.
+
+    Ordinea e importantă: entitățile se decodifică ÎNAINTE de eliminarea
+    tagurilor, altfel `&lt;script&gt;` ar supraviețui decodificării ulterioare.
     """
     if not raw:
         return ""
-    text = _SCRIPT_STYLE_RE.sub(" ", raw)
+    text = html.unescape(raw)
+    text = _SCRIPT_STYLE_RE.sub(" ", text)
     text = _TAG_RE.sub(" ", text)
-    text = html.unescape(text)
     text = _WHITESPACE_RE.sub(" ", text).strip()
     if len(text) > SUMMARY_MAX_CHARS:
         text = text[: SUMMARY_MAX_CHARS - 1].rstrip() + "…"
@@ -180,7 +184,11 @@ class RssNewsAdapter:
     async def _fetch_source(self, client: httpx.AsyncClient, source: NewsSource) -> list[NewsItem]:
         url = str(source.url)
         try:
-            response = await client.get(url, headers={"User-Agent": USER_AGENT})
+            response = await client.get(
+                url,
+                headers={"User-Agent": USER_AGENT},
+                follow_redirects=True,
+            )
             response.raise_for_status()
         except httpx.TimeoutException as e:
             raise SourceError(SOURCE_NAME, f"timeout la '{source.name}' ({url})") from e
@@ -194,8 +202,12 @@ class RssNewsAdapter:
         except httpx.HTTPError as e:
             raise SourceError(SOURCE_NAME, f"eroare de rețea la '{source.name}': {e}") from e
 
-        # feedparser e sincron; îl rulăm în thread ca să nu blocheze bucla de evenimente
-        feed = await asyncio.to_thread(feedparser.parse, response.content)
+        # feedparser e sincron; îl rulăm în thread ca să nu blocheze bucla de evenimente.
+        # BytesIO e obligatoriu: altfel feedparser tratează bytes scurți ca
+        # nume de fișier/cale locală și poate citi fișiere de pe disc.
+        feed = await asyncio.to_thread(
+            feedparser.parse, io.BytesIO(response.content)
+        )
 
         if not feed.entries:
             # bozo = XML stricat; version gol = conținut care nu e deloc RSS/Atom (ex. HTML)
