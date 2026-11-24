@@ -61,20 +61,26 @@ VERIFIED_FEEDS: tuple[tuple[str, str, str], ...] = (
 )
 
 
+def _strip_markup(text: str) -> str:
+    """Elimină blocurile script/style și toate tagurile HTML."""
+    text = _SCRIPT_STYLE_RE.sub(" ", text)
+    return _TAG_RE.sub(" ", text)
+
+
 def clean_html(raw: str | None) -> str:
     """Convertește conținutul HTML din RSS în text simplu sigur.
 
-    Elimină script/style, toate tagurile, decodifică entitățile HTML și
-    normalizează spațiile. Rezultatul nu poate conține markup executabil.
-
-    Ordinea e importantă: entitățile se decodifică ÎNAINTE de eliminarea
-    tagurilor, altfel `&lt;script&gt;` ar supraviețui decodificării ulterioare.
+    Entitățile HTML pot fi codificate de mai multe ori (ex. `&amp;lt;`).
+    De aceea facem două trepte de decodificare, fiecare urmată de eliminarea
+    markup-ului: orice tag rezultat din decodificare e eliminat înainte să
+    ajungă în output. Ce rămâne sunt exclusiv entități neverificabile ca
+    markup — text inofensiv.
     """
     if not raw:
         return ""
     text = html.unescape(raw)
-    text = _SCRIPT_STYLE_RE.sub(" ", text)
-    text = _TAG_RE.sub(" ", text)
+    text = _strip_markup(text)
+    text = _strip_markup(html.unescape(text))
     text = _WHITESPACE_RE.sub(" ", text).strip()
     if len(text) > SUMMARY_MAX_CHARS:
         text = text[: SUMMARY_MAX_CHARS - 1].rstrip() + "…"

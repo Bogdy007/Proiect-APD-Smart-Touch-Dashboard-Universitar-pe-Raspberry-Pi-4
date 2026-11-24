@@ -129,6 +129,12 @@ def test_disabled_source_is_skipped():
         ("&lt;script&gt;alert(1)&lt;/script&gt;", ""),
         ("&lt;style&gt;x{}&lt;/style&gt;Text", "Text"),
         ("&lt;b&gt;bold&lt;/b&gt;", "bold"),
+        # entități codificate de DOUĂ ori: &amp;lt; devine &lt; apoi <tag>
+        ("&amp;lt;script&amp;gt;alert(1)&amp;lt;/script&amp;gt;", ""),
+        ("&amp;lt;style&amp;gt;x{}&amp;lt;/style&amp;gt;Text rămas", "Text rămas"),
+        ("&amp;lt;b&amp;gt;bold&amp;lt;/b&amp;gt;", "bold"),
+        # text normal cu entități legitime trebuie păstrat
+        ("Articol &amp; analiză: 5 &lt; 10", "Articol & analiză: 5 < 10"),
         ("   spații   multiple\n\n", "spații multiple"),
         (None, ""),
         ("", ""),
