@@ -1,0 +1,28 @@
+:root {
+  /* Culori */
+  --bg: #220202;
+  --surface: #320404;
+  --surface-pressed: #520a08;
+  --border: #7a1916;
+  --text: #fff5f5;
+  --text-secondary: #e3b8b6;
+  --accent: #ff6b57;
+
+  /* Stari */
+  --color-online: #3ddc84;
+  --color-offline: #ff9f43;
+  --color-danger: #ff0000;
+
+  /* Spatiere si forme */
+  --gap: 8px;
+  --radius: 10px;
+  --status-height: 56px;
+  --touch-min: 44px;
+
+  /* Tipografie */
+  --font-base: 16px;
+  --font-title: 20px;
+  --font-family: system-ui, sans-serif;
+
+  --press-duration: 80ms;
+}
