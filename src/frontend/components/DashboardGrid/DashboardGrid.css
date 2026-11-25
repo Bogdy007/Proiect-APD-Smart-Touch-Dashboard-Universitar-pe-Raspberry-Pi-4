@@ -1,0 +1,85 @@
+*,
+*::before,
+*::after {
+ box-sizing: border-box;
+}
+
+html,
+body {
+ margin: 0;
+ background: #000;
+ color: var(--text);
+ font-family: var(--font-family);
+ font-size: var(--font-base);
+ overflow: hidden;
+ user-select: none;
+ -webkit-tap-highlight-color: transparent;
+}
+
+#root {
+ width: var(--screen-width);
+ height: var(--screen-height);
+}
+
+.dashboard {
+ display: grid;
+ grid-template-rows: var(--status-height) 1fr;
+ width: var(--screen-width);
+ height: var(--screen-height);
+ background: var(--bg);
+ touch-action: manipulation;
+}
+
+.dashboard__status {
+ display: flex;
+ align-items: center;
+ gap: var(--gap);
+ padding: 0 12px;
+ background: var(--surface);
+ border-bottom: 1px solid var(--border);
+ border-radius: 0 0 var(--radius) var(--radius);
+}
+
+.dashboard__grid {
+ display: grid;
+ grid-template-columns: 1fr 1fr;
+ grid-template-rows: 1fr 1fr;
+ gap: var(--gap);
+ padding: var(--gap);
+ min-height: 0;
+}
+
+.dashboard__slot {
+ min-width: 0;
+ min-height: 0;
+ overflow: hidden;
+ background: var(--surface);
+ border: 1px solid var(--border);
+ border-radius: var(--radius);
+ touch-action: pan-y;
+}
+
+.touch-target {
+ min-width: var(--touch-min);
+ min-height: var(--touch-min);
+ display: inline-flex;
+ align-items: center;
+ justify-content: center;
+ background: transparent;
+ border: none;
+ color: inherit;
+ font: inherit;
+ cursor: default;
+ transition:
+  background-color var(--press-duration) linear,
+  border-color var(--press-duration) linear;
+}
+
+.touch-target:active {
+ background: var(--surface-pressed);
+}
+
+.touch-row {
+ display: flex;
+ gap: var(--gap);
+}
