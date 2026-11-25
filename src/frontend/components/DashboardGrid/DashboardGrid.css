@@ -70,7 +70,9 @@ body {
  color: inherit;
  font: inherit;
  cursor: default;
- transition: background-color var(--press-duration) linear;
+ transition:
+  background-color var(--press-duration) linear,
+  border-color var(--press-duration) linear;
 }
 
 .touch-target:active {

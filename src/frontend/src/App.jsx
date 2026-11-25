@@ -1,11 +1,12 @@
 import DashboardGrid from "../components/DashboardGrid/DashboardGrid";
+import StatusBar from "../components/StatusBar/StatusBar";
 
 const slot = (t) => <div style={{ padding: 12 }}>{t}</div>;
 
 export default function App() {
  return (
   <DashboardGrid
-   statusBar={slot("STATUS BAR")}
+   statusBar={<StatusBar />}
    widgets={[
     { id: "email", title: "Email", element: slot("EMAIL WIDGET") },
     { id: "weather", title: "Vreme", element: slot("WEATHER WIDGET") },
