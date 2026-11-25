@@ -1,0 +1,34 @@
+name: Contor review-uri
+
+# La fiecare review trimis pe un PR, recalculează numărul de review-uri al
+# fiecărui membru și actualizează comentariul din issue-ul #7 (TL: code review).
+on:
+  pull_request_review:
+    types: [submitted, dismissed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: review-counter
+  cancel-in-progress: false
+
+jobs:
+  count:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+      - uses: actions/github-script@v7
+        env:
+          TRACKING_ISSUE: "7"
+          REVIEW_TARGET: "15"
+          REVIEW_LEAD: mororazvan04
+        with:
+          script: |
+            const run = require('./.github/scripts/review-counter.js');
+            await run({ github, context, core });
