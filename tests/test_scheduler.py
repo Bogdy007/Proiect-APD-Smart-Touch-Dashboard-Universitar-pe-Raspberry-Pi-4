@@ -1,4 +1,4 @@
-"""Teste unitare pentru CacheScheduler și logica de exponential backoff."""
+"""Teste unitare pentru CacheScheduler, exponential backoff și tratarea HTTP 429."""
 
 from __future__ import annotations
 
@@ -39,19 +39,24 @@ def test_compute_backoff_exponential_cap_jitter_and_retry_after():
 class _DummyMail:
     mode = "mock"
 
+    def __init__(self) -> None:
+        self.calls = 0
+
     async def fetch_inbox(self, limit: int = 50) -> list[EmailDetail]:
+        self.calls += 1
         return []
 
 
 class _FlakyWeather:
-    def __init__(self) -> None:
-        self.fail = True
+    def __init__(self, *, fail: bool = True, retry_after_s: float | None = None) -> None:
+        self.fail = fail
+        self.retry_after_s = retry_after_s
         self.calls = 0
 
     async def fetch(self, latitude: float, longitude: float, location_name: str) -> WeatherData:
         self.calls += 1
         if self.fail:
-            raise SourceError("weather", "offline", retry_after_s=None)
+            raise SourceError("weather", "offline", retry_after_s=self.retry_after_s)
         return WeatherData(
             location_name=location_name,
             latitude=latitude,
@@ -67,8 +72,40 @@ class _FlakyWeather:
         )
 
 
+class _ScriptedWeather:
+    """Execută o secvență fixă de erori (sau None pentru succes) la apelurile consecutive."""
+
+    def __init__(self, script: list[SourceError | None]) -> None:
+        self._script = list(script)
+        self.calls = 0
+
+    async def fetch(self, latitude: float, longitude: float, location_name: str) -> WeatherData:
+        idx = self.calls
+        self.calls += 1
+        action = self._script[idx] if idx < len(self._script) else None
+        if action is not None:
+            raise action
+        return WeatherData(
+            location_name=location_name,
+            latitude=latitude,
+            longitude=longitude,
+            current=WeatherCurrent(
+                temperature_c=12.5,
+                feels_like_c=10.0,
+                humidity_pct=55,
+                wind_kmh=6.0,
+                condition=WeatherCondition.CLEAR,
+                description="Senin",
+            ),
+        )
+
+
 class _DummyNews:
+    def __init__(self) -> None:
+        self.calls = 0
+
     async def fetch(self, sources: list[NewsSource]) -> list[NewsItem]:
+        self.calls += 1
         return []
 
 
@@ -76,7 +113,7 @@ def test_scheduler_runs_handles_failure_and_recovers_on_connectivity(tmp_path):
     async def _run():
         db = SQLiteDatabase(tmp_path / "sched.db")
         config = SQLiteConfigStore(db)
-        weather = _FlakyWeather()
+        weather = _FlakyWeather(fail=True)
         cache = SQLiteCacheManager(
             config,
             db,
@@ -122,6 +159,203 @@ def test_scheduler_runs_handles_failure_and_recovers_on_connectivity(tmp_path):
 
         await scheduler.stop()
         assert scheduler.is_running is False
+        await cache.aclose()
+        db.close()
+
+    asyncio.run(_run())
+
+
+def test_scheduler_exponential_backoff_after_consecutive_failures(tmp_path):
+    """Verifică creșterea exponențială a backoff-ului la erori consecutive, plafonul și resetarea la succes."""
+    async def _run():
+        db = SQLiteDatabase(tmp_path / "backoff.db")
+        config = SQLiteConfigStore(db)
+        weather = _ScriptedWeather([
+            SourceError("weather", "timeout #1"),
+            SourceError("weather", "timeout #2"),
+            SourceError("weather", "HTTP 500 #3"),
+            SourceError("weather", "HTTP 503 #4"),
+            None,  # a 5-a încercare reușește -> backoff se resetează
+        ])
+        cache = SQLiteCacheManager(
+            config,
+            db,
+            mail_provider=_DummyMail(),
+            weather_provider=weather,
+            news_provider=_DummyNews(),
+        )
+        scheduler = CacheScheduler(
+            cache,
+            config,
+            backoff_base_s=15.0,
+            backoff_max_s=150.0,
+            jitter_ratio=0.0,
+            run_immediately=True,
+        )
+
+        weather_delays: list[float] = []
+        observed_failures: list[int] = []
+
+        async def _fake_wait(source, delay_s: float) -> bool:
+            if source != "weather":
+                return False
+            weather_delays.append(delay_s)
+            observed_failures.append(scheduler.get_state("weather").consecutive_failures)
+            await asyncio.sleep(0)
+            return len(weather_delays) < 5
+
+        scheduler._wait_interruptible = _fake_wait  # type: ignore[method-assign]
+
+        await scheduler.start()
+        await asyncio.wait_for(asyncio.gather(*scheduler._tasks.values()), timeout=5.0)
+        await scheduler.stop()
+
+        # 15*2^1=30, 15*2^2=60, 15*2^3=120, min(15*2^4, 150)=150, apoi interval normal (600s) la succes
+        assert observed_failures == [1, 2, 3, 4, 0]
+        assert weather_delays == [30.0, 60.0, 120.0, 150.0, 600.0]
+        assert weather.calls == 5
+        assert scheduler.get_state("weather").last_error is None
+
+        env = await cache.get_weather()
+        assert env.meta.is_stale is False
+        assert env.data.current.temperature_c == 12.5
+
+        await cache.aclose()
+        db.close()
+
+    asyncio.run(_run())
+
+
+def test_scheduler_respects_http_429_retry_after(tmp_path):
+    """Verifică respectarea Retry-After la HTTP 429 (când depășește backoff-ul și când e mai mic)."""
+    async def _run():
+        db = SQLiteDatabase(tmp_path / "retry429.db")
+        config = SQLiteConfigStore(db)
+        weather = _ScriptedWeather([
+            SourceError("weather", "HTTP 429 Too Many Requests", retry_after_s=120.0),
+            SourceError("weather", "HTTP 429 Too Many Requests", retry_after_s=10.0),
+        ])
+        cache = SQLiteCacheManager(
+            config,
+            db,
+            mail_provider=_DummyMail(),
+            weather_provider=weather,
+            news_provider=_DummyNews(),
+        )
+        scheduler = CacheScheduler(
+            cache,
+            config,
+            backoff_base_s=15.0,
+            backoff_max_s=900.0,
+            jitter_ratio=0.0,
+            run_immediately=True,
+        )
+
+        weather_delays: list[float] = []
+
+        async def _fake_wait(source, delay_s: float) -> bool:
+            if source != "weather":
+                return False
+            weather_delays.append(delay_s)
+            await asyncio.sleep(0)
+            return len(weather_delays) < 2
+
+        scheduler._wait_interruptible = _fake_wait  # type: ignore[method-assign]
+
+        await scheduler.start()
+        await asyncio.wait_for(asyncio.gather(*scheduler._tasks.values()), timeout=5.0)
+        await scheduler.stop()
+
+        # Eroarea 1: backoff=30s < retry_after=120s -> folosește 120s
+        # Eroarea 2: backoff=60s > retry_after=10s  -> păstrează backoff-ul de 60s
+        assert weather_delays == [120.0, 60.0]
+        assert scheduler.get_state("weather").consecutive_failures == 2
+        assert "429" in (scheduler.get_state("weather").last_error or "")
+
+        await cache.aclose()
+        db.close()
+
+    asyncio.run(_run())
+
+
+def test_scheduler_waits_for_429_retry_after_in_real_loop(tmp_path):
+    """Verifică în bucla reală că scheduler-ul nu reîncearcă înainte de expirarea Retry-After."""
+    async def _run():
+        db = SQLiteDatabase(tmp_path / "retry429_real.db")
+        config = SQLiteConfigStore(db)
+        weather = _FlakyWeather(fail=True, retry_after_s=0.35)
+        cache = SQLiteCacheManager(
+            config,
+            db,
+            mail_provider=_DummyMail(),
+            weather_provider=weather,
+            news_provider=_DummyNews(),
+        )
+        scheduler = CacheScheduler(
+            cache,
+            config,
+            backoff_base_s=0.02,
+            backoff_max_s=1.0,
+            jitter_ratio=0.0,
+            run_immediately=True,
+        )
+
+        await scheduler.start()
+        await asyncio.sleep(0.12)
+        # Deși backoff-ul calculat ar fi 0.04s, Retry-After (0.35s) previne retry-ul prematur
+        assert weather.calls == 1
+
+        await asyncio.sleep(0.35)
+        assert weather.calls >= 2
+
+        await scheduler.stop()
+        await cache.aclose()
+        db.close()
+
+    asyncio.run(_run())
+
+
+def test_scheduler_skips_disabled_widget_and_triggers_single_source(tmp_path):
+    """Verifică omiterea widget-urilor dezactivate și trezirea selectivă cu trigger_refresh."""
+    async def _run():
+        db = SQLiteDatabase(tmp_path / "disabled.db")
+        config = SQLiteConfigStore(db)
+        cfg = await config.get_config()
+        for w in cfg.widgets:
+            if w.type == "news":
+                w.enabled = False
+        await config.save_config(cfg)
+
+        mail = _DummyMail()
+        weather = _FlakyWeather(fail=False)
+        news = _DummyNews()
+        cache = SQLiteCacheManager(
+            config,
+            db,
+            mail_provider=mail,
+            weather_provider=weather,
+            news_provider=news,
+        )
+        scheduler = CacheScheduler(
+            cache,
+            config,
+            run_immediately=False,
+        )
+
+        await scheduler.start()
+        await asyncio.sleep(0.08)
+        assert mail.calls == 0 and weather.calls == 0 and news.calls == 0
+
+        # Trezim doar vremea și știrile (știrile fiind dezactivate nu trebuie să apeleze provider-ul)
+        scheduler.trigger_refresh("weather")
+        scheduler.trigger_refresh("news")
+        await asyncio.sleep(0.15)
+
+        assert weather.calls == 1
+        assert news.calls == 0
+        assert mail.calls == 0
+
+        await scheduler.stop()
         await cache.aclose()
         db.close()
 
