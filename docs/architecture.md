@@ -193,6 +193,26 @@ cp .env.example .env
 uvicorn src.backend.app:app --host 127.0.0.1 --port 8000 --reload
 ```
 
+În dezvoltare interfața rulează separat, pe Vite (`npm run dev`, portul 5173), cu proxy pentru `/api` și `/ws` către portul 8000.
+
+### Pe Raspberry Pi (kiosk)
+
+Un singur proces servește totul pe `http://127.0.0.1:8000`:
+
+| Cale | Ce servește |
+|---|---|
+| `/` | interfața compilată din `src/frontend/dist` (`npm run build`) |
+| `/api/...` | API-ul REST |
+| `/ws` | evenimentele WebSocket |
+
+```bash
+cd src/frontend && npm ci && npm run build && cd ../..
+uvicorn src.backend.app:app --host 127.0.0.1 --port 8000
+# Chromium --kiosk http://127.0.0.1:8000
+```
+
+Rutele API au prioritate față de fișierele statice. Dacă folderul `dist` lipsește, backend-ul pornește doar cu API-ul. Calea se poate schimba cu variabila de mediu `FRONTEND_DIST`.
+
 ## 9. Reguli de lucru (Git)
 
 - `main` protejat: doar prin PR, cel puțin 1 aprobare (TL pentru `src/backend/` și pentru modificări de scheme) și CI verde.

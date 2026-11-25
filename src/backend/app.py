@@ -4,6 +4,11 @@ Rulare locală:
     uvicorn src.backend.app:app --host 127.0.0.1 --port 8000 --reload
 Documentație interactivă: http://127.0.0.1:8000/docs
 
+Pe Raspberry Pi, același proces servește și interfața compilată
+(`npm run build` -> src/frontend/dist) la http://127.0.0.1:8000/, deci
+kiosk-ul are nevoie de un singur serviciu. Calea se poate schimba cu
+variabila de mediu FRONTEND_DIST.
+
 app.py nu conține logică de achiziție sau cache: doar rutează cererile către
 serviciile din interfaces.py. Implementările reale se injectează în create_app().
 
@@ -21,12 +26,14 @@ import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from .interfaces import AuthError, AuthService, CacheService, ConfigStore, MetricsProvider
 from .mock_services import MockAuthService, MockCacheService, MockConfigStore, MockMetricsProvider
@@ -56,6 +63,13 @@ from .schemas import (
 log = logging.getLogger("dashboard")
 
 METRICS_PUSH_INTERVAL_S = 5
+
+DEFAULT_FRONTEND_DIST = Path(__file__).resolve().parents[1] / "frontend" / "dist"
+
+
+def frontend_dist() -> Path:
+    """Folderul cu interfața compilată (rezultatul `npm run build`)."""
+    return Path(os.environ.get("FRONTEND_DIST", DEFAULT_FRONTEND_DIST))
 
 
 # ---------------------------------------------------------------------------
@@ -174,7 +188,21 @@ def create_app(services: Services | None = None) -> FastAPI:
         return JSONResponse(status_code=exc.status_code, content=detail)
 
     _register_routes(app)
+    _mount_frontend(app)
     return app
+
+
+def _mount_frontend(app: FastAPI) -> None:
+    """Servește interfața compilată la `/`, după rutele API (care au prioritate).
+
+    În dezvoltare folderul nu există (interfața rulează pe Vite, portul 5173),
+    așa că backend-ul pornește doar cu API-ul.
+    """
+    dist = frontend_dist()
+    if not (dist / "index.html").is_file():
+        log.info("Interfața compilată nu există în %s; se servește doar API-ul.", dist)
+        return
+    app.mount("/", StaticFiles(directory=dist, html=True), name="frontend")
 
 
 async def _metrics_loop(app: FastAPI) -> None:
