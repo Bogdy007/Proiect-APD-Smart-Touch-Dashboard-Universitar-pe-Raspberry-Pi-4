@@ -135,6 +135,13 @@ def test_disabled_source_is_skipped():
         ("&amp;lt;b&amp;gt;bold&amp;lt;/b&amp;gt;", "bold"),
         # text normal cu entități legitime trebuie păstrat
         ("Articol &amp; analiză: 5 &lt; 10", "Articol & analiză: 5 < 10"),
+        # „<” urmat de spațiu/cifră e text, nu tag — trebuie păstrat (observația TL)
+        ("5 < 6 si 7 > 3", "5 < 6 si 7 > 3"),
+        ("2 < 3 și 4 > 1", "2 < 3 și 4 > 1"),
+        ("Rezultatul e < 100 de unități", "Rezultatul e < 100 de unități"),
+        ("<20 grade >10 grade", "<20 grade >10 grade"),
+        # taguri reale în jurul textului cu < >
+        ("Preț <b>500</b> lei, taxă < 10%", "Preț 500 lei, taxă < 10%"),
         ("   spații   multiple\n\n", "spații multiple"),
         (None, ""),
         ("", ""),
@@ -395,3 +402,14 @@ def test_redirect_is_followed(code):
     items = _fetch(adapter, [src])
     assert len(items) == 2
     assert items[0].title == "Știre una"
+
+
+def test_mixed_plain_text_and_markup_preserved():
+    """Conținut mixt: text cu < > comparativ + markup real — markupul iese, textul rămâne."""
+    desc = ("<p>Temperatura a fost <b>32</b> grade, iar vântul a atins < 40 km/h. "
+            "Detalii: <a href='https://example.com'>link</a> și <i>observații</i>.</p>")
+    body = _rss(_item("Titlu", "https://example.com/mixed", desc=desc))
+    adapter = _adapter({"https://example.com/feed.xml": httpx.Response(200, content=body)})
+    item = _fetch(adapter, [_source()])[0]
+    # tagurile sunt înlocuite cu spațiu -> rămâne un spațiu înainte de punct
+    assert item.summary == "Temperatura a fost 32 grade, iar vântul a atins < 40 km/h. Detalii: link și observații ."

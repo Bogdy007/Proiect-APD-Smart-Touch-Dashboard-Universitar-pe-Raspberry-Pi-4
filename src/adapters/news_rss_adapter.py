@@ -46,7 +46,9 @@ USER_AGENT = "SmartTouchDashboard/1.0 (educational project; Raspberry Pi)"
 _SCRIPT_STYLE_RE = re.compile(
     r"<(script|style)\b[^>]*>.*?</\1\s*>", re.IGNORECASE | re.DOTALL
 )
-_TAG_RE = re.compile(r"<[^>]+>")
+# Tag HTML real: < urmat de literă, '!', '?' sau '/'+literă (ex. <b>, </p>, <!-- -->).
+# „<” urmat de spațiu sau cifră e text obișnuit („5 < 6") și NU se elimină.
+_TAG_RE = re.compile(r"</?[a-zA-Z!?][^>]*>")
 _WHITESPACE_RE = re.compile(r"\s+")
 
 # Fluxuri RSS/Atom verificate (răspund 200 cu XML valid, noiembrie 2026).
